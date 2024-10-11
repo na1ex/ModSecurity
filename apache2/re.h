@@ -47,6 +47,8 @@ typedef struct msre_cache_rec msre_cache_rec;
 #endif
 
 /* Actions, variables, functions and operator functions */
+char DSOLOCAL * update_rule_target_contextual(rule_exception *re, msre_rule ** rules, int i, msre_ruleset *ruleset,  msre_rule *rule,const char *p2, const char *p3);
+
 char DSOLOCAL *update_rule_target_ex(modsec_rec *msr, msre_ruleset *ruleset, msre_rule *rule, const char *p2,
         const char *p3);
 
@@ -78,6 +80,8 @@ msre_var DSOLOCAL *generate_single_var(modsec_rec *msr, msre_var *var, apr_array
 #ifdef DEBUG_CONF
 char DSOLOCAL* msre_actionset_generate_action_string(apr_pool_t* pool, const msre_actionset* actionset);
 #endif
+
+msre_rule DSOLOCAL *msre_rule_shallow_copy(apr_pool_t *mp, msre_rule *orig);
 
 #if defined(WITH_LUA)
 apr_table_t DSOLOCAL *generate_multi_var(modsec_rec *msr, msre_var *var, apr_array_header_t *tfn_arr,
@@ -329,6 +333,9 @@ msre_actionset DSOLOCAL *msre_actionset_create(msre_engine *engine, apr_pool_t *
 msre_actionset DSOLOCAL *msre_actionset_merge(msre_engine *engine, apr_pool_t *mp, msre_actionset *parent,
     msre_actionset *child, int inherit_by_default);
 
+#ifdef DEBUG_CONF
+char DSOLOCAL *msre_actionset_generate_action_string(apr_pool_t *pool, const msre_actionset *actionset);
+#endif
 msre_actionset DSOLOCAL *msre_actionset_create_default(msre_engine *engine);
 
 void DSOLOCAL msre_actionset_set_defaults(msre_actionset *actionset);

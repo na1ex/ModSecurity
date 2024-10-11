@@ -243,12 +243,20 @@ extern DSOLOCAL int *unicode_map_table;
 #define RULE_EXCEPTION_REMOVE_MSG       4
 #define RULE_EXCEPTION_REMOVE_TAG       5
 
+/* inheritance */
+#define RULE_EXCEPTION_UPDATE_ACTION_ID  10
+#define RULE_EXCEPTION_UPDATE_TARGET_ID  13
+#define RULE_EXCEPTION_UPDATE_TARGET_MSG 14
+#define RULE_EXCEPTION_UPDATE_TARGET_TAG 15
+
 #define NBSP                            160
 
 struct rule_exception {
     int                  type;
-    const char          *param;
-    void                *param_data;
+    const char   *param;
+    void               *param_data;
+    const char   *p2;                   /* used in case of update */
+    const char   *p3;                   /* used in case of update */
 };
 
 struct modsec_rec {
@@ -257,10 +265,10 @@ struct modsec_rec {
 
     request_rec         *r_early;
     request_rec         *r;
-    directory_config    *dcfg1;
-    directory_config    *dcfg2;
-    directory_config    *usercfg;
-    directory_config    *txcfg;
+    directory_config    *dcfg1;    /* phase:1 directory ctx */
+    directory_config    *dcfg2;    /* phase:2 directory ctx */
+    directory_config    *usercfg; /* special user configuration*/
+    directory_config    *txcfg;    /* transaction context */
 
     unsigned int         reqbody_should_exist;
     unsigned int         reqbody_chunked;

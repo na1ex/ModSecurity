@@ -218,7 +218,7 @@ char *msre_ruleset_phase_rule_update_target_matching_exception(modsec_rec *msr, 
         if (mode == 0) { /* Looking for next rule. */
             assert(rule->actionset != NULL);
             if (msre_ruleset_rule_matches_exception(rule, re)) {
-                err = update_rule_target_ex(msr, ruleset, rule, p2, p3);
+            	err = update_rule_target_contextual(re, rules, i, ruleset, rule, p2, p3);
                 if (err) return err;
                 if (rule->actionset->is_chained) mode = 2; /* Match all rules in this chain. */
             } else {
@@ -226,10 +226,11 @@ char *msre_ruleset_phase_rule_update_target_matching_exception(modsec_rec *msr, 
             }
         } else { /* Handling rule that is part of a chain. */
             if (mode == 2) { /* We want to change the rule. */
-                err = update_rule_target_ex(msr, ruleset, rule, p2, p3);
+            	/* TODO:  rethink that decision as changing all targets off all rules within the chained secrules is surprising and may lead to difficult to understand issues */
+            	err = update_rule_target_contextual(re, rules, i, ruleset, rule, p2, p3);
                 if (err) return err;
             }
-
+            /* if next secrule is not part a chain, it will be checked against target modification */
             if ((rule->actionset == NULL)||(rule->actionset->is_chained == 0)) mode = 0;
         }
     }
@@ -238,6 +239,78 @@ char *msre_ruleset_phase_rule_update_target_matching_exception(modsec_rec *msr, 
 }
 
 
+/**
+ * \brief Update target based on context.
+ *           if applied in current context, directly modify the target as rule is the original owner.
+ *           if applied in a merged context, shallow copy the rule and deep copy the targets for modification
+ * \param re the exception currently checked.
+ * \param rules array of rules to check
+ * \param i current position in the rules arrays
+ * \param ruleset Pointer to set of rules to modify
+ * \param rule Pointer to exception object describing which rules to modify
+ * \param p2 Pointer to configuration option TARGET
+ * \param p3 Pointer to configuration option REPLACED_TARGET
+ *
+ * TODO: in case several updates are done, shallow and deep copy should be done only for the first match. (rule->shallowcopy boolean ? )
+ * TODO: rework to have less params and still adapt well to existing code.
+ */
+char  *update_rule_target_contextual(rule_exception *re,
+		msre_rule ** rules,
+		int i,
+		msre_ruleset *ruleset,
+		msre_rule *rule,
+		const char *p2,
+		const char *p3) {
+
+   msre_rule *rule_copy;
+    char *err;
+
+	if ( (re->type ==RULE_EXCEPTION_UPDATE_TARGET_ID ) ||
+			(re->type ==RULE_EXCEPTION_UPDATE_TARGET_TAG )  ||
+			(re->type ==RULE_EXCEPTION_UPDATE_TARGET_MSG ) ) {
+		/* merge of parent rules has been done, this is called before merge of current context rule */
+#ifdef DEBUG_CONF
+		ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, ruleset->mp, "Update of inherited rule: shallow copy rule, deep copy the targets before update.");
+#endif
+		rule_copy = msre_rule_shallow_copy(ruleset->mp, rule);
+		if (rule_copy == NULL ) {
+			return apr_psprintf(ruleset->mp, "Error to update target by ID - memory allocation");
+		}
+		rule_copy->targets = apr_array_copy(ruleset->mp, rule->targets);
+		/* work on copied targets */
+		err = update_rule_target_ex(NULL, ruleset, rule_copy, p2, p3);
+		if (err) return err;
+		/* TODO: compare number of elts or content (e.g. using msc_headers_to_buffer ? ) before replacement of targets? */
+		/*               could be done after update_rule_target_ex is modified to use apr for pop/push  */
+		rules[i] = rule_copy;
+
+#ifdef DEBUG_CONF
+		ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, ruleset->mp, " targets comparison. Original");
+		ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, ruleset->mp, " rule->targets [%d]            : %s",  rule->targets->nelts, orig_targets );
+		// Try#2/
+		msre_var ** targets = (msre_var **)rule->targets->elts;
+		for (i = 0; i < rule->targets->nelts; i++) {
+			ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, ruleset->mp, "orig.   targets[i]->name : %s ; targets[i]->param : %s ; is negated %d ",   targets[i]->name,  targets[i]->param,   targets[i]->is_negated);
+		}
+		ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, ruleset->mp, " targets comparison. Updated");
+		ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, ruleset->mp, " rule_copy->targets [%d] : %s", rule_copy->targets->nelts, new_targets);
+		targets = (msre_var **)rule_copy->targets->elts;
+		for (i = 0; i < rule_copy->targets->nelts; i++) {
+			ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, ruleset->mp, "copy.   targets[i]->name : %s ; targets[i]->param : %s ; is negated %d  ",   targets[i]->name,  targets[i]->param,  targets[i]->is_negated);
+		}
+#endif
+
+	} else {
+		/* working in same context, done before the merge, ruleset is owner of the rule. */
+		err = update_rule_target_ex(NULL, ruleset, rule, p2, p3);
+		if (err) return err;
+	}
+	return NULL;
+}
+
+/* TODO: use  apr lib to handle the targets (e.g. apr_array_pop )
+ * TODO: use apr memory allocation for perf and security.
+ */
 char *update_rule_target_ex(modsec_rec *msr, msre_ruleset *ruleset, msre_rule *rule, const char *p2,
         const char *p3)   {
     assert(ruleset != NULL);
@@ -484,11 +557,12 @@ end:
 int msre_ruleset_rule_matches_exception(msre_rule *rule, rule_exception *re)   {
     assert(rule != NULL);
     int match = 0;
-
+    apr_pool_t *mptmp = NULL;
     /* Only remove non-placeholder rules */
     if (rule->placeholder == RULE_PH_NONE) {
         assert(re != NULL);
         switch(re->type) {
+	    case RULE_EXCEPTION_UPDATE_TARGET_ID :
             case RULE_EXCEPTION_REMOVE_ID :
                 if ((rule->actionset != NULL)&&(rule->actionset->id != NULL)) {
                     int ruleid = atoi(rule->actionset->id);
@@ -499,6 +573,7 @@ int msre_ruleset_rule_matches_exception(msre_rule *rule, rule_exception *re)   {
                 }
 
                 break;
+            case RULE_EXCEPTION_UPDATE_TARGET_MSG:
             case RULE_EXCEPTION_REMOVE_MSG :
                 if ((rule->actionset != NULL)&&(rule->actionset->msg != NULL)) {
                     char *my_error_msg = NULL;
@@ -512,6 +587,7 @@ int msre_ruleset_rule_matches_exception(msre_rule *rule, rule_exception *re)   {
                 }
 
                 break;
+            case RULE_EXCEPTION_UPDATE_TARGET_TAG:
             case RULE_EXCEPTION_REMOVE_TAG :
                 if ((rule->actionset != NULL)&&(apr_is_empty_table(rule->actionset->actions) == 0)) {
                     char *my_error_msg = NULL;
@@ -1216,6 +1292,18 @@ static msre_actionset *msre_actionset_copy(apr_pool_t *mp, msre_actionset *orig)
     if (copy == NULL) return NULL;
     copy->actions = apr_table_copy(mp, orig->actions);
 
+    return copy;
+}
+
+/**
+ * Create a (shallow) copy of the supplied rule.
+ */
+msre_rule *msre_rule_shallow_copy(apr_pool_t *mp, msre_rule *orig) {
+	msre_rule *copy = NULL;
+
+    if (orig == NULL) return NULL;
+    copy = (msre_rule *)apr_pmemdup(mp, orig, sizeof(msre_rule));
+    if (copy == NULL) return NULL;
     return copy;
 }
 

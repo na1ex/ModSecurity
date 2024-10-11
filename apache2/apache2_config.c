@@ -275,6 +275,56 @@ static void copy_rules_phase(apr_pool_t *mp,
  * Copies rules between one phase of two configuration contexts,
  * taking exceptions into account.
  *
+ * @param mp apr pool structure (from msr)
+ * @param merge_ruleset is recently merged  msre_ruleset
+ * @param exceptions_arr Exceptions' apr_array_header_t
+ * @retval 0 Everything went well.
+ * @retval -1 Something went wrong.
+ *
+ */
+static int update_rules(apr_pool_t *mp, msre_ruleset *merge_ruleset,  apr_array_header_t *exceptions_arr)
+{
+    int ret = 0;
+    char* err;
+    int j;
+    rule_exception **exceptions;
+
+	if (merge_ruleset == NULL  ||   exceptions_arr == NULL) {
+    	return -1;
+    }
+
+    exceptions = (rule_exception **)exceptions_arr->elts;
+    // Loop in the exception and call:    msre_ruleset_rule_update_target_matching_exception
+    for(j = 0; j < exceptions_arr->nelts; j++) {
+        /* Process exceptions. */
+        switch(exceptions[j]->type) {
+        case RULE_EXCEPTION_UPDATE_ACTION_ID :
+        case RULE_EXCEPTION_UPDATE_TARGET_ID :
+        case RULE_EXCEPTION_UPDATE_TARGET_MSG :
+        case RULE_EXCEPTION_UPDATE_TARGET_TAG :
+
+#ifdef DEBUG_CONF
+        	ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "=====   update_rules. Type %d ; param %s, p2 %s, p3 %s ", exceptions[j]->type,  exceptions[j]->param, exceptions[j]->p2, exceptions[j]->p3);
+#endif
+        	err = msre_ruleset_rule_update_target_matching_exception(NULL, merge_ruleset, exceptions[j], exceptions[j]->p2, exceptions[j]->p3);
+        	if (err != NULL ) {
+        		ret = -1;
+        	}
+        	break;
+
+        }
+    }
+
+    return ret;
+}
+
+
+/**
+ * @brief update rules between one phase of two configuration contexts.
+ *
+ * update rules between one phase of two configuration contexts,
+ *  based on exceptions.
+ *
  * @param mp apr pool structure
  * @param parent_ruleset Parent's msre_ruleset
  * @param child_ruleset Child's msre_ruleset
@@ -420,23 +470,25 @@ void *merge_directory_configs(apr_pool_t *mp, void *_parent, void *_child)
         merged->rule_inheritance = parent->rule_inheritance;
         if ((child->ruleset == NULL)&&(parent->ruleset == NULL)) {
             #ifdef DEBUG_CONF
-            ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "No rules in this context.");
+            ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "merged %pp. No rules in this context.", merged);
             #endif
 
             /* Do nothing, there are no rules in either context. */
         } else
         if (child->ruleset == NULL) {
             #ifdef DEBUG_CONF
-            ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "Using parent rules in this context.");
+            ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "merged %pp. Using parent %pp rules in this context.", merged, parent);
             #endif
 
             /* Copy the rules from the parent context. */
             merged->ruleset = msre_ruleset_create(parent->ruleset->engine, mp);
             copy_rules(mp, parent->ruleset, merged->ruleset, child->rule_exceptions);
+            /* apply update based on child exceptions */
+            update_rules(mp, merged->ruleset, child->rule_exceptions);
         } else
         if (parent->ruleset == NULL) {
             #ifdef DEBUG_CONF
-            ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "Using child rules in this context.");
+            ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "merged %pp. parent->ruleset == NULL. Using only child %pp rules in this context.", merged, child);
             #endif
 
             /* Copy child rules. */
@@ -453,12 +505,14 @@ void *merge_directory_configs(apr_pool_t *mp, void *_parent, void *_child)
                 child->ruleset->phase_logging);
         } else {
             #ifdef DEBUG_CONF
-            ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "Using parent then child rules in this context.");
+            ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "merged %pp. both parent and child exist. Using parent %pp then child %pp rules in this context.", merged, parent, child);
             #endif
 
             /* Copy parent rules, then add child rules to it. */
             merged->ruleset = msre_ruleset_create(parent->ruleset->engine, mp);
             copy_rules(mp, parent->ruleset, merged->ruleset, child->rule_exceptions);
+            /* apply update based on child exceptions */
+            update_rules(mp, merged->ruleset, child->rule_exceptions);
 
             apr_array_cat(merged->ruleset->phase_request_headers,
                 child->ruleset->phase_request_headers);
@@ -472,6 +526,10 @@ void *merge_directory_configs(apr_pool_t *mp, void *_parent, void *_child)
                 child->ruleset->phase_logging);
         }
     } else {
+#ifdef DEBUG_CONF
+         ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp, "merged %pp. No rule inheritance to be applied", merged);
+#endif
+
         merged->rule_inheritance = 0;
         if (child->ruleset != NULL) {
             /* Copy child rules. */
@@ -793,7 +851,9 @@ static const char *add_rule(cmd_parms *cmd, directory_config *dcfg, int type,
     int type_with_lua = 1;
     int type_rule;
     int rule_actionset;
-    int offset = 0;
+#ifdef DEBUG_CONF
+    ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool,"Add_rule dcfg %pp", dcfg);
+#endif
 
     #ifdef DEBUG_CONF
     ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool,
@@ -989,7 +1049,7 @@ static const char *add_rule(cmd_parms *cmd, directory_config *dcfg, int type,
 
         #ifdef DEBUG_CONF
         ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool,
-            "Adding placeholder %pp for rule %pp id=\"%s\".", phrule, rule, rule->actionset->id);
+            "dcfg %pp ; Adding placeholder %pp for rule %pp id=\"%s\".", dcfg, phrule, rule, rule->actionset->id);
         #endif
 
         /* shallow copy of original rule with placeholder marked as target */
@@ -2398,6 +2458,9 @@ static const char *cmd_rule_update_target_by_id(cmd_parms *cmd, void *_dcfg,
     directory_config *dcfg = (directory_config *)_dcfg;
     rule_exception *re = apr_pcalloc(cmd->pool, sizeof(rule_exception));
     
+    char *err;
+    if (dcfg == NULL) return NULL;
+    
     if(p1 == NULL)  {
         return apr_psprintf(cmd->pool, "Updating target by ID with no ID");
     }
@@ -2407,10 +2470,29 @@ static const char *cmd_rule_update_target_by_id(cmd_parms *cmd, void *_dcfg,
     re->param = p1;
 
     if(dcfg->ruleset == NULL) {
-        return apr_psprintf(cmd->pool, "Updating target by ID with no ruleset in this context");
+#ifdef DEBUG_CONF
+        ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp No need to try updating target by ID with no ruleset in this context", dcfg);
+#endif
+    }else {
+#ifdef DEBUG_CONF
+        ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp Updating target by ID in original context ( owner of the rules within context before merge - kind of strange )", dcfg);
+#endif
+        err = msre_ruleset_rule_update_target_matching_exception(NULL, dcfg->ruleset, re, p2, p3);
+        if (err !=NULL) {
+            return err;
     }
+    }
+    /* Modify exception type to be used after parent's rules merge */
+    /* TODO: use ruleset's pool */
+#ifdef DEBUG_CONF
+    ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp Modify exception type  after the merge and push in rule_exceptions of type RULE_EXCEPTION_UPDATE_TARGET_ID.", dcfg);
+#endif
+    re->type = RULE_EXCEPTION_UPDATE_TARGET_ID;
+    re->p2 = p2;
+    re->p3 = p3;
+    *(rule_exception **)apr_array_push(dcfg->rule_exceptions) = re;
 
-    return msre_ruleset_rule_update_target_matching_exception(NULL, dcfg->ruleset, re, p2, p3);
+    return NULL;
 }
 
 /**
@@ -2440,7 +2522,8 @@ static const char *cmd_rule_update_target_by_tag(cmd_parms *cmd, void *_dcfg,
     }
     directory_config *dcfg = (directory_config *)_dcfg;
     rule_exception *re = apr_pcalloc(cmd->pool, sizeof(rule_exception));
-    
+    char *err;
+    if (dcfg == NULL) return NULL;
     if(p1 == NULL)  {
         return apr_psprintf(cmd->pool, "Updating target by tag with no tag");
     }
@@ -2452,8 +2535,32 @@ static const char *cmd_rule_update_target_by_tag(cmd_parms *cmd, void *_dcfg,
         return apr_psprintf(cmd->pool, "ModSecurity: Invalid regular expression: %s", p1);
     }
 
-    return msre_ruleset_rule_update_target_matching_exception(NULL, dcfg->ruleset, re, p2, p3);
+    if(dcfg->ruleset == NULL) {
+#ifdef DEBUG_CONF
+        ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp No need to try updating target by TAG with no ruleset in this context", dcfg);
+#endif
+    }else {
+#ifdef DEBUG_CONF
+        ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp Updating target by TAG in original context ( owner of the rules within context before merge - kind of strange )", dcfg);
+#endif
+        err = msre_ruleset_rule_update_target_matching_exception(NULL, dcfg->ruleset, re, p2, p3);
+        if (err !=NULL) {
+            return err;
 }
+    }
+    /* Modify exception type to be used after parent's rules merge */
+    /* TODO: use ruleset's pool */
+#ifdef DEBUG_CONF
+    ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp Modify exception type  after the merge and push in rule_exceptions of type RULE_EXCEPTION_UPDATE_TARGET_TAG.", dcfg);
+#endif
+    re->type = RULE_EXCEPTION_UPDATE_TARGET_TAG;
+    re->p2 = p2;
+    re->p3 = p3;
+    *(rule_exception **)apr_array_push(dcfg->rule_exceptions) = re;
+
+    return NULL;
+}
+
 /**
  * \brief Add SecRuleUpdateTargetByMsg configuration option
  *
@@ -2482,6 +2589,9 @@ static const char *cmd_rule_update_target_by_msg(cmd_parms *cmd, void *_dcfg,
     }
     directory_config *dcfg = (directory_config *)_dcfg;
     rule_exception *re = apr_pcalloc(cmd->pool, sizeof(rule_exception));
+    char *err;
+
+    if (dcfg == NULL) return NULL;
     
     if(p1 == NULL)  {
         return apr_psprintf(cmd->pool, "Updating target by message with no message");
@@ -2494,7 +2604,30 @@ static const char *cmd_rule_update_target_by_msg(cmd_parms *cmd, void *_dcfg,
         return apr_psprintf(cmd->pool, "ModSecurity: Invalid regular expression: %s", p1);
     }
 
-    return msre_ruleset_rule_update_target_matching_exception(NULL, dcfg->ruleset, re, p2, p3);
+    if(dcfg->ruleset == NULL) {
+#ifdef DEBUG_CONF
+        ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp No need to try updating target by MSG with no ruleset in this context", dcfg);
+#endif
+    }else {
+#ifdef DEBUG_CONF
+        ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp Updating target by MSG in original context ( owner of the rules within context before merge - kind of strange )", dcfg);
+#endif
+        err = msre_ruleset_rule_update_target_matching_exception(NULL, dcfg->ruleset, re, p2, p3);
+        if (err !=NULL) {
+            return err;
+        }
+    }
+    /* Modify exception type to be used after parent's rules merge */
+    /* TODO: use ruleset's pool */
+#ifdef DEBUG_CONF
+    ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, cmd->pool, " dcfg %pp Modify exception type  after the merge and push in rule_exceptions of type RULE_EXCEPTION_UPDATE_TARGET_MSG.", dcfg);
+#endif
+    re->type = RULE_EXCEPTION_UPDATE_TARGET_MSG;
+    re->p2 = p2;
+    re->p3 = p3;
+    *(rule_exception **)apr_array_push(dcfg->rule_exceptions) = re;
+
+    return NULL;
 }
 
 
